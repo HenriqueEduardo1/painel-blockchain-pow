@@ -1,0 +1,92 @@
+<div class="ambient-shape ambient-a"></div>
+<div class="ambient-shape ambient-b"></div>
+
+<main class="layout">
+  <header class="panel hero">
+    <p class="eyebrow">Visualizacao da Rede PoW</p>
+    <h1>Crescimento Distribuido da Blockchain</h1>
+    <p>
+      Acompanhe o crescimento da cadeia, o congestionamento da mempool e os
+      forks em tempo real. Esta interface funciona com eventos simulados,
+      WebSocket ou SSE.
+    </p>
+  </header>
+
+  <section class="panel controls">
+    <div class="control-item">
+      <label for="sourceType">Fonte de eventos</label>
+      <select id="sourceType" [(ngModel)]="sourceType" (change)="aoMudarTipoFonte()">
+        <option value="mock">Fluxo simulado</option>
+        <option value="ws">WebSocket</option>
+        <option value="sse">Eventos enviados pelo servidor (SSE)</option>
+      </select>
+    </div>
+
+    <div class="control-item">
+      <label for="endpointInput">Endpoint</label>
+      <input
+        id="endpointInput"
+        type="text"
+        [(ngModel)]="endpoint"
+        placeholder="ws://host:porta/ws/chain ou http://host:porta/events"
+      />
+    </div>
+
+    <div class="control-actions">
+      <button id="connectBtn" type="button" (click)="conectarFonte()" [disabled]="isConnected">
+        Conectar
+      </button>
+      <button
+        id="disconnectBtn"
+        type="button"
+        class="ghost"
+        (click)="desconectarFonte()"
+        [disabled]="!isConnected"
+      >
+        Desconectar
+      </button>
+    </div>
+
+    <div class="status-row">
+      <span>Conexao</span>
+      <span id="connectionBadge" class="badge" [ngClass]="connectionClass">
+        {{ connectionDetail }}
+      </span>
+    </div>
+  </section>
+
+  <section class="panel metrics">
+    <article>
+      <h2>Altura da cadeia principal</h2>
+      <p id="metricHeight">{{ mainHeight }}</p>
+    </article>
+    <article>
+      <h2>Total de blocos</h2>
+      <p id="metricBlocks">{{ totalBlocks }}</p>
+    </article>
+    <article>
+      <h2>Blocos em fork</h2>
+      <p id="metricForks">{{ forkBlocks }}</p>
+    </article>
+    <article>
+      <h2>Tamanho da mempool</h2>
+      <p id="metricMempool">{{ mempoolSize }}</p>
+    </article>
+  </section>
+
+  <section class="panel graph-panel">
+    <div class="legend">
+      <span><i class="dot main"></i>Cadeia principal</span>
+      <span><i class="dot fork"></i>Ramo de fork</span>
+      <span><i class="dot fork-point"></i>Ponto de fork</span>
+    </div>
+    <div id="network" #networkContainer></div>
+  </section>
+
+  <section class="panel events">
+    <h2>Eventos recentes</h2>
+    <ul id="eventList">
+      <li *ngFor="let eventText of eventLogs">{{ eventText }}</li>
+    </ul>
+  </section>
+</main>

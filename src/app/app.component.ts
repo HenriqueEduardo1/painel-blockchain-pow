@@ -25,7 +25,7 @@ export class AppComponent implements AfterViewInit, OnDestroy {
   @ViewChild('networkContainer', { static: true })
   networkContainerRef!: ElementRef<HTMLDivElement>;
 
-  sourceType: SourceType = 'mock';
+  sourceType: SourceType = 'ws';
   endpoint = 'ws://localhost:8000/ws/chain';
 
   connectionDetail = 'desconectado';

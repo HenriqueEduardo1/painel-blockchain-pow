@@ -153,6 +153,14 @@ export class AppComponent implements AfterViewInit, OnDestroy {
         }
 
         this.consumirBloco(block);
+
+        const mainChainHashes = Array.isArray(event.main_chain_hashes)
+          ? event.main_chain_hashes.filter((item): item is string => typeof item === 'string')
+          : [];
+        if (mainChainHashes.length > 0) {
+          this.aplicarReorganizacao(mainChainHashes);
+        }
+
         if (typeof event.mempool_size === 'number') {
           this.mempoolSize = event.mempool_size;
         }

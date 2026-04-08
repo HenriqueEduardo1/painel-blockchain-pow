@@ -47,6 +47,15 @@ export class AppComponent implements AfterViewInit, OnDestroy {
 
   private readonly blocks = new Map<string, BlockData>();
   private readonly edgeIds = new Set<string>();
+  private readonly childrenCountByParent = new Map<string, number>();
+
+  private forkPointHashes = new Set<string>();
+  private mainChainHashes = new Set<string>();
+
+  private mainBlockCount = 0;
+
+  private readonly performanceModeThreshold = 300;
+  private performanceModeEnabled = false;
 
   ngAfterViewInit(): void {
     this.inicializarRede();
@@ -192,9 +201,6 @@ export class AppComponent implements AfterViewInit, OnDestroy {
       default:
         this.registrarEvento(`[ignorado] tipo de evento desconhecido ${event.type}`);
     }
-
-    this.atualizarEstilosFork();
-    this.atualizarMetricas();
   }
 
   private consumirSnapshot(rawBlocks: unknown[], mempoolSizeRaw: unknown): void {
@@ -202,6 +208,15 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     this.graphEdges.clear();
     this.blocks.clear();
     this.edgeIds.clear();
+    this.childrenCountByParent.clear();
+
+    this.forkPointHashes = new Set<string>();
+    this.mainChainHashes = new Set<string>();
+    this.mainBlockCount = 0;
+
+    this.mainHeight = 0;
+    this.totalBlocks = 0;
+    this.forkBlocks = 0;
 
     if (typeof mempoolSizeRaw === 'number') {
       this.mempoolSize = mempoolSizeRaw;
@@ -210,92 +225,201 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     rawBlocks.forEach((rawBlock) => {
       const block = parsearDadosBloco(rawBlock);
       if (block) {
-        this.consumirBloco(block);
+        this.consumirBloco(block, false);
       }
     });
+
+    this.atualizarMetricasDerivadas();
+    this.atualizarModoPerformance();
   }
 
-  private consumirBloco(block: BlockData): void {
-    this.blocks.set(block.hash, {
+  private consumirBloco(block: BlockData, atualizarUi = true): boolean {
+    const isMain = this.mainChainHashes.has(block.hash) || Boolean(block.is_main);
+    const normalizedBlock: BlockData = {
       ...block,
-      is_main: Boolean(block.is_main),
+      is_main: isMain,
+    };
+
+    if (this.blocks.has(normalizedBlock.hash)) {
+      return false;
+    }
+
+    this.blocks.set(normalizedBlock.hash, normalizedBlock);
+
+    if (normalizedBlock.is_main) {
+      this.mainChainHashes.add(normalizedBlock.hash);
+      this.mainBlockCount += 1;
+      this.mainHeight = Math.max(this.mainHeight, normalizedBlock.index);
+    }
+
+    const isForkPoint = this.forkPointHashes.has(normalizedBlock.hash);
+
+    this.graphNodes.add({
+      id: normalizedBlock.hash,
+      label: formatarRotuloNo(normalizedBlock),
+      title: formatarTooltipNo(normalizedBlock),
+      level: normalizedBlock.index,
+      color: corPorBloco(normalizedBlock, isForkPoint),
+      borderWidth: isForkPoint ? 4 : 2,
     });
 
-    this.graphNodes.update({
-      id: block.hash,
-      label: formatarRotuloNo(block),
-      title: formatarTooltipNo(block),
-      level: block.index,
-      color: corPorBloco(block),
-    });
-
-    if (block.previous_hash && block.previous_hash !== '0') {
-      const edgeId = `${block.previous_hash}->${block.hash}`;
+    if (normalizedBlock.previous_hash && normalizedBlock.previous_hash !== '0') {
+      const edgeId = `${normalizedBlock.previous_hash}->${normalizedBlock.hash}`;
       if (!this.edgeIds.has(edgeId)) {
         this.edgeIds.add(edgeId);
         this.graphEdges.add({
           id: edgeId,
-          from: block.previous_hash,
-          to: block.hash,
+          from: normalizedBlock.previous_hash,
+          to: normalizedBlock.hash,
         });
       }
+
+      const childCount = (this.childrenCountByParent.get(normalizedBlock.previous_hash) ?? 0) + 1;
+      this.childrenCountByParent.set(normalizedBlock.previous_hash, childCount);
+
+      if (childCount === 2) {
+        this.forkPointHashes.add(normalizedBlock.previous_hash);
+        const parentBlock = this.blocks.get(normalizedBlock.previous_hash);
+        if (parentBlock) {
+          this.graphNodes.update({
+            id: normalizedBlock.previous_hash,
+            color: corPorBloco(parentBlock, true),
+            borderWidth: 4,
+          });
+        }
+      }
     }
+
+    if (atualizarUi) {
+      this.atualizarMetricasDerivadas();
+      this.atualizarModoPerformance();
+    }
+
+    return true;
   }
 
   private aplicarReorganizacao(mainChainHashes: string[]): void {
-    const mainSet = new Set(mainChainHashes);
+    const nextMainSet = new Set(mainChainHashes);
+    const nodeUpdates: VisNode[] = [];
+    let requiresMainHeightRecalc = false;
 
-    this.blocks.forEach((block, hash) => {
-      const updated: BlockData = {
-        ...block,
-        is_main: mainSet.has(hash),
-      };
-
-      this.blocks.set(hash, updated);
-      this.graphNodes.update({
-        id: hash,
-        color: corPorBloco(updated),
-      });
-    });
-  }
-
-  private atualizarEstilosFork(): void {
-    const childrenCountByParent = new Map<string, number>();
-
-    this.blocks.forEach((block) => {
-      if (!block.previous_hash || block.previous_hash === '0') {
+    this.mainChainHashes.forEach((hash) => {
+      if (nextMainSet.has(hash)) {
         return;
       }
 
-      const count = childrenCountByParent.get(block.previous_hash) ?? 0;
-      childrenCountByParent.set(block.previous_hash, count + 1);
-    });
+      const block = this.blocks.get(hash);
+      if (!block || !block.is_main) {
+        return;
+      }
 
-    this.blocks.forEach((block, hash) => {
-      const isForkPoint = (childrenCountByParent.get(hash) ?? 0) > 1;
-      this.graphNodes.update({
+      const updatedBlock: BlockData = {
+        ...block,
+        is_main: false,
+      };
+
+      this.blocks.set(hash, updatedBlock);
+      this.mainBlockCount = Math.max(0, this.mainBlockCount - 1);
+      if (updatedBlock.index >= this.mainHeight) {
+        requiresMainHeightRecalc = true;
+      }
+
+      nodeUpdates.push({
         id: hash,
-        color: corPorBloco(block, isForkPoint),
-        borderWidth: isForkPoint ? 4 : 2,
+        color: corPorBloco(updatedBlock, this.forkPointHashes.has(hash)),
+        borderWidth: this.forkPointHashes.has(hash) ? 4 : 2,
       });
     });
+
+    nextMainSet.forEach((hash) => {
+      if (this.mainChainHashes.has(hash)) {
+        return;
+      }
+
+      const block = this.blocks.get(hash);
+      if (!block || block.is_main) {
+        return;
+      }
+
+      const updatedBlock: BlockData = {
+        ...block,
+        is_main: true,
+      };
+
+      this.blocks.set(hash, updatedBlock);
+      this.mainBlockCount += 1;
+      this.mainHeight = Math.max(this.mainHeight, updatedBlock.index);
+
+      nodeUpdates.push({
+        id: hash,
+        color: corPorBloco(updatedBlock, this.forkPointHashes.has(hash)),
+        borderWidth: this.forkPointHashes.has(hash) ? 4 : 2,
+      });
+    });
+
+    this.mainChainHashes = nextMainSet;
+
+    if (requiresMainHeightRecalc) {
+      this.mainHeight = this.calcularAlturaMainChain();
+    }
+
+    if (nodeUpdates.length > 0) {
+      this.graphNodes.update(nodeUpdates);
+    }
+
+    this.atualizarMetricasDerivadas();
   }
 
-  private atualizarMetricas(): void {
-    let maxHeight = 0;
-    let forkCount = 0;
+  private calcularAlturaMainChain(): number {
+    let nextMainHeight = 0;
 
-    this.blocks.forEach((block) => {
-      if (block.is_main) {
-        maxHeight = Math.max(maxHeight, block.index);
-      } else {
-        forkCount += 1;
+    this.mainChainHashes.forEach((hash) => {
+      const block = this.blocks.get(hash);
+      if (block?.is_main) {
+        nextMainHeight = Math.max(nextMainHeight, block.index);
       }
     });
 
-    this.mainHeight = maxHeight;
+    return nextMainHeight;
+  }
+
+  private atualizarMetricasDerivadas(): void {
     this.totalBlocks = this.blocks.size;
-    this.forkBlocks = forkCount;
+    this.forkBlocks = Math.max(0, this.totalBlocks - this.mainBlockCount);
+  }
+
+  private atualizarModoPerformance(): void {
+    if (!this.network) {
+      return;
+    }
+
+    const shouldEnablePerformanceMode = this.blocks.size >= this.performanceModeThreshold;
+
+    if (shouldEnablePerformanceMode === this.performanceModeEnabled) {
+      return;
+    }
+
+    this.performanceModeEnabled = shouldEnablePerformanceMode;
+
+    this.network.setOptions({
+      interaction: {
+        hover: !shouldEnablePerformanceMode,
+        dragNodes: false,
+        zoomView: true,
+      },
+      edges: shouldEnablePerformanceMode
+        ? {
+            smooth: false,
+          }
+        : {
+            smooth: {
+              enabled: true,
+              type: 'cubicBezier',
+              forceDirection: 'vertical',
+              roundness: 0.2,
+            },
+          },
+    });
   }
 
   private registrarEvento(message: string): void {

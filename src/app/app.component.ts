@@ -15,6 +15,9 @@ import { MockSource } from './sources/mock-source';
 import { SseSource } from './sources/sse-source';
 import { WebSocketSource } from './sources/websocket-source';
 import { parsearDadosBloco } from './utils/event-parsers';
+import { IpfsService } from './services/ipfs.service';
+import { HttpClient } from '@angular/common/http';
+import { CryptoService } from './services/crypto.service';
 
 @Component({
   selector: 'app-root',
@@ -22,6 +25,21 @@ import { parsearDadosBloco } from './utils/event-parsers';
   styleUrls: ['./app.component.css'],
 })
 export class AppComponent implements AfterViewInit, OnDestroy {
+  selectedFile: File | null = null;
+  receiverPublicKey: string = '';
+  
+  // O Angular injeta os serviços automaticamente aqui no construtor (Injeção de Dependência)
+  constructor(
+    private ipfsService: IpfsService,
+    private cryptoService: CryptoService,
+    private http: HttpClient
+  ) {}
+  
+  onFileSelected(event: any) {
+    this.selectedFile = event.target.files[0];
+  }
+  
+  
   @ViewChild('networkContainer', { static: true })
   networkContainerRef!: ElementRef<HTMLDivElement>;
 
@@ -190,7 +208,7 @@ export class AppComponent implements AfterViewInit, OnDestroy {
   }
 
   private consumirSnapshot(rawBlocks: unknown[], mempoolSizeRaw: unknown): void {
-    this.graphNodes.clear();
+    // this.graphNodes.clear();
     this.graphEdges.clear();
     this.blocks.clear();
     this.edgeIds.clear();
@@ -295,5 +313,132 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     const logLine = `${stamp} ${message}`;
 
     this.eventLogs = [logLine, ...this.eventLogs].slice(0, 10);
+  }
+
+  async enviarTransacao() {
+    if (!this.selectedFile || !this.receiverPublicKey) return;
+
+    try {
+      console.log('1. Gerando chave AES descartável...');
+      const aesKey = await this.cryptoService.generateAESKey();
+
+      console.log('2. Criptografando o arquivo com AES...');
+      const { encryptedBlob, iv } = await this.cryptoService.encryptFile(this.selectedFile, aesKey);
+
+      // Vamos converter o IV para base64 para enviá-lo junto com a transação
+      const ivBase64 = this.cryptoService.arrayBufferToBase64(iv);
+      
+      // Opcional: Você pode querer criar um novo arquivo para o IPFS contendo a extensão original ou metadados
+      const encryptedFile = new File([encryptedBlob], `${this.selectedFile.name}.enc`);
+
+      console.log('3. Subindo arquivo criptografado para o IPFS...');
+      const fileUri = await this.ipfsService.uploadFile(encryptedFile, encryptedFile.name);
+      console.log('Arquivo salvo no IPFS! URI:', fileUri);
+
+      console.log('4. Criptografando a chave AES com a Pública do Destinatário...');
+      const rsaPublicKey = await this.cryptoService.importPublicKey(this.receiverPublicKey);
+      const encryptedAccessKeyBase64 = await this.cryptoService.encryptAESKeyWithRSA(aesKey, rsaPublicKey);
+
+      console.log('5. Montando a Transação...');
+      const transaction = {
+        sender: 'SUA_CHAVE_PUBLICA_AQUI', 
+        receiver: this.receiverPublicKey,
+        file_uri: fileUri,
+        encrypted_key: encryptedAccessKeyBase64, // A chave AES trancada
+        aes_iv: ivBase64, // O IV necessário para abrir o arquivo
+        fee: 1.5,
+        timestamp: Date.now()
+      };
+
+      console.log('6. Disparando para o Gateway (Kafka)!', transaction);
+      
+      // Fazendo o POST para a rota que sugerimos criar no seu Python FastAPI
+      const httpEndpoint = this.endpoint.replace('ws://', 'http://').replace('/ws/chain', '/transactions');
+      await this.http.post(httpEndpoint, transaction).toPromise();
+      
+      alert('Transação enviada e arquivo seguro na rede!');
+
+    } catch (error) {
+      console.error('Falha no processo:', error);
+      alert('Erro ao enviar o arquivo. Verifique se a chave pública está no formato correto.');
+    }
+  }
+  // ==========================================
+  
+  // O destinatário cola sua chave privada aqui (em um cenário real, isso viria de uma carteira local segura, nunca exposta no HTML diretamente)
+  minhaChavePrivada: string = '';
+  transacaoJsonPasted: string = '';
+
+  /**
+   * Simula o clique em um botão "Baixar e Descriptografar Arquivo"
+   * @param transacaoRecebida O objeto JSON que chegou do Gateway Kafka
+   */
+  async baixarEDescriptografarArquivo(transacaoRecebida: any) {
+    if (!this.minhaChavePrivada) {
+      alert('Sua chave privada é necessária para abrir este arquivo.');
+      return;
+    }
+
+    try {
+      console.log('1. Importando sua Chave Privada RSA...');
+      const rsaPrivateKey = await this.cryptoService.importPrivateKey(this.minhaChavePrivada);
+
+      console.log('2. Recuperando a Chave AES descartável da transação...');
+      // encrypted_key é a chave AES trancada que veio na transação
+      const aesKey = await this.cryptoService.decryptAESKeyWithRSA(
+        transacaoRecebida.encrypted_key, 
+        rsaPrivateKey
+      );
+
+      console.log('3. Baixando o arquivo criptografado do IPFS...');
+      // Aqui você faz a requisição GET para o gateway do IPFS usando a URI salva
+      // Dependendo de como seu IpfsService está configurado, você retorna um Blob
+      const cid = transacaoRecebida.file_uri.replace('ipfs://', '');
+      
+      // 2. Usa o gateway da Cloudflare (ou ipfs.io) que tem políticas de CORS mais flexíveis para frontends
+      const ipfsGatewayUrl = `https://cloudflare-ipfs.com/ipfs/${cid}`; 
+      
+      const encryptedBlob = await this.http.get(ipfsGatewayUrl, { responseType: 'blob' }).toPromise();
+
+      if (!encryptedBlob) throw new Error('Falha ao baixar arquivo do IPFS');
+
+      console.log('4. Descriptografando o arquivo (AES)...');
+      // aes_iv é o Vetor de Inicialização público que viajou na transação
+      const decryptedBlob = await this.cryptoService.decryptFile(
+        encryptedBlob, 
+        aesKey, 
+        transacaoRecebida.aes_iv
+      );
+
+      console.log('5. Sucesso! Preparando o download no navegador...');
+      this.dispararDownloadNoNavegador(decryptedBlob, 'arquivo_descriptografado'); // Idealmente, você salva o nome original nos metadados ou no BD
+
+    } catch (error) {
+      console.error('Falha na descriptografia:', error);
+      alert('Acesso negado ou arquivo corrompido. Você é realmente o destinatário desta transação?');
+    }
+  }
+
+  // Utilitário para forçar o navegador a baixar o Blob final como um arquivo real
+  private dispararDownloadNoNavegador(blob: Blob, nomeArquivo: string) {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nomeArquivo;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  }
+
+
+  dispararTesteDescriptografia() {
+    try {
+      const transacaoObjeto = JSON.parse(this.transacaoJsonPasted);
+      this.baixarEDescriptografarArquivo(transacaoObjeto);
+    } catch (e) {
+      alert('O formato da transação colada não é um JSON válido.');
+      console.error('Erro de parse:', e);
+    }
   }
 }

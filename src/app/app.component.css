@@ -302,7 +302,9 @@ button.ghost {
 }
 
 @media (max-width: 960px) {
-  .controls {
+  .controls
+  .upload-panel,
+  .download-panel {
     grid-column: 1 / -1;
   }
 
@@ -325,3 +327,12 @@ button.ghost {
     grid-template-columns: 1fr;
   }
 }
+
+.upload-panel {
+  grid-column: span 6;
+}
+
+.download-panel {
+  grid-column: span 6;
+}
+

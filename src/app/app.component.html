@@ -89,4 +89,45 @@
       <li *ngFor="let eventText of eventLogs">{{ eventText }}</li>
     </ul>
   </section>
+  
+  <section class="panel upload-panel">
+    <h2>Transferir Arquivo Seguro</h2>
+    <div class="control-item">
+      <label>Chave Pública do Destinatário</label>
+      <input type="text" [(ngModel)]="receiverPublicKey" placeholder="Cole a chave aqui...">
+    </div>
+    
+    <div class="control-item">
+      <label>Selecione o arquivo para envio</label>
+      <input type="file" (change)="onFileSelected($event)"> 
+    </div>
+
+    <button (click)="enviarTransacao()" [disabled]="!selectedFile || !receiverPublicKey">
+      Criptografar e Enviar para a Blockchain
+    </button>
+  </section>
+
+  <section class="panel download-panel">
+    <h2>Receber e Descriptografar Arquivo</h2>
+    
+    <div class="control-item">
+      <label>Sua Chave Privada RSA (Destinatário)</label>
+      <input type="password" [(ngModel)]="minhaChavePrivada" placeholder="Cole sua chave PKCS#8 aqui...">
+    </div>
+    
+    <div class="control-item">
+      <label>Dados da Transação (JSON)</label>
+      <textarea 
+        rows="4" 
+        [(ngModel)]="transacaoJsonPasted" 
+        placeholder='Cole o JSON da transação aqui. Ex: {"file_uri": "...", "encrypted_key": "...", "aes_iv": "..."}'>
+      </textarea>
+    </div>
+
+    <button 
+      (click)="dispararTesteDescriptografia()" 
+      [disabled]="!minhaChavePrivada || !transacaoJsonPasted">
+      Resgatar Arquivo
+    </button>
+  </section>
 </main>

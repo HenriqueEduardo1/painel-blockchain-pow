@@ -90,11 +90,27 @@
     </ul>
   </section>
   
+  <section class="panel crypto-panel">
+    <h2>Geção de Chaves RSA (Sua Identidade)</h2>
+    <div class="control-actions">
+      <button type="button" (click)="gerarChaves()">Gerar Novo Par de Chaves</button>
+    </div>
+    
+    <div class="control-item">
+      <label>Sua Chave Pública (Compartilhe com remetentes)</label>
+      <textarea rows="4" [(ngModel)]="minhaChavePublica" placeholder="Sua chave pública aparecerá aqui..." readonly></textarea>
+    </div>
+    <div class="control-item">
+      <label>Sua Chave Privada (Não compartilhe!)</label>
+      <textarea rows="4" [(ngModel)]="minhaChavePrivada" placeholder="Sua chave privada aparecerá aqui..." readonly></textarea>
+    </div>
+  </section>
+
   <section class="panel upload-panel">
     <h2>Transferir Arquivo Seguro</h2>
     <div class="control-item">
       <label>Chave Pública do Destinatário</label>
-      <input type="text" [(ngModel)]="receiverPublicKey" placeholder="Cole a chave aqui...">
+      <textarea rows="4" [(ngModel)]="chavePublicaDestinatario" placeholder="Insira a Chave Pública (PEM) do Destinatário aqui..."></textarea>
     </div>
     
     <div class="control-item">
@@ -102,32 +118,38 @@
       <input type="file" (change)="onFileSelected($event)"> 
     </div>
 
-    <button (click)="enviarTransacao()" [disabled]="!selectedFile || !receiverPublicKey">
+    <div class="control-item">
+      <label>Taxa da Transação (Fee)</label>
+      <input type="number" [(ngModel)]="taxaTransacao" min="0" step="0.1" placeholder="Ex: 0.5">
+    </div>
+
+    <button (click)="enviarTransacao()" [disabled]="!selectedFile || !chavePublicaDestinatario">
       Criptografar e Enviar para a Blockchain
     </button>
   </section>
 
-  <section class="panel download-panel">
+<section class="panel download-panel">
     <h2>Receber e Descriptografar Arquivo</h2>
     
     <div class="control-item">
-      <label>Sua Chave Privada RSA (Destinatário)</label>
-      <input type="password" [(ngModel)]="minhaChavePrivada" placeholder="Cole sua chave PKCS#8 aqui...">
+      <label>URI do Arquivo</label>
+      <input type="text" [(ngModel)]="uriResgate" placeholder="ipfs://...">
     </div>
     
     <div class="control-item">
-      <label>Dados da Transação (JSON)</label>
-      <textarea 
-        rows="4" 
-        [(ngModel)]="transacaoJsonPasted" 
-        placeholder='Cole o JSON da transação aqui. Ex: {"file_uri": "...", "encrypted_key": "...", "aes_iv": "..."}'>
-      </textarea>
+      <label>Chave Simétrica Criptografada (da Transação)</label>
+      <textarea rows="3" [(ngModel)]="chaveSimetricaCriptografada" placeholder="Base64 da Chave Simétrica..."></textarea>
+    </div>
+    
+    <div class="control-item">
+      <label>Sua Chave Privada</label>
+      <textarea rows="4" [(ngModel)]="minhaChavePrivada" placeholder="A Chave Privada gerada ou inserida será usada aqui..."></textarea>
     </div>
 
     <button 
-      (click)="dispararTesteDescriptografia()" 
-      [disabled]="!minhaChavePrivada || !transacaoJsonPasted">
-      Resgatar Arquivo
+      (click)="resgatarArquivo()" 
+      [disabled]="!uriResgate || !minhaChavePrivada || !chaveSimetricaCriptografada">
+      Buscar e Descriptografar
     </button>
   </section>
 </main>

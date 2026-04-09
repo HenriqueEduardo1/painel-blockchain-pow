@@ -329,10 +329,14 @@ button.ghost {
 }
 
 .upload-panel {
-  grid-column: span 6;
+  grid-column: span 4;
 }
 
 .download-panel {
-  grid-column: span 6;
+  grid-column: span 4;
+}
+
+.crypto-panel {
+  grid-column: span 4;
 }
 

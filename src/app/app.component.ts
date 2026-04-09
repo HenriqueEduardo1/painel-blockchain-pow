@@ -26,7 +26,6 @@ import { CryptoService } from './services/crypto.service';
 })
 export class AppComponent implements AfterViewInit, OnDestroy {
   selectedFile: File | null = null;
-  receiverPublicKey: string = '';
   
   // O Angular injeta os serviços automaticamente aqui no construtor (Injeção de Dependência)
   constructor(
@@ -54,6 +53,14 @@ export class AppComponent implements AfterViewInit, OnDestroy {
   totalBlocks = 0;
   forkBlocks = 0;
   mempoolSize = 0;
+
+  minhaChavePublica: string = '';
+  minhaChavePrivada: string = '';
+  chavePublicaDestinatario: string = '';
+  taxaTransacao: number = 0;
+
+  uriResgate: string = '';
+  chaveSimetricaCriptografada: string = '';
 
   eventLogs: string[] = [];
 
@@ -315,107 +322,84 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     this.eventLogs = [logLine, ...this.eventLogs].slice(0, 10);
   }
 
-  async enviarTransacao() {
-    if (!this.selectedFile || !this.receiverPublicKey) return;
-
+  async gerarChaves() {
     try {
-      console.log('1. Gerando chave AES descartável...');
-      const aesKey = await this.cryptoService.generateAESKey();
-
-      console.log('2. Criptografando o arquivo com AES...');
-      const { encryptedBlob, iv } = await this.cryptoService.encryptFile(this.selectedFile, aesKey);
-
-      // Vamos converter o IV para base64 para enviá-lo junto com a transação
-      const ivBase64 = this.cryptoService.arrayBufferToBase64(iv);
-      
-      // Opcional: Você pode querer criar um novo arquivo para o IPFS contendo a extensão original ou metadados
-      const encryptedFile = new File([encryptedBlob], `${this.selectedFile.name}.enc`);
-
-      console.log('3. Subindo arquivo criptografado para o IPFS...');
-      const fileUri = await this.ipfsService.uploadFile(encryptedFile, encryptedFile.name);
-      console.log('Arquivo salvo no IPFS! URI:', fileUri);
-
-      console.log('4. Criptografando a chave AES com a Pública do Destinatário...');
-      const rsaPublicKey = await this.cryptoService.importPublicKey(this.receiverPublicKey);
-      const encryptedAccessKeyBase64 = await this.cryptoService.encryptAESKeyWithRSA(aesKey, rsaPublicKey);
-
-      console.log('5. Montando a Transação...');
-      const transaction = {
-        sender: 'SUA_CHAVE_PUBLICA_AQUI', 
-        receiver: this.receiverPublicKey,
-        file_uri: fileUri,
-        encrypted_key: encryptedAccessKeyBase64, // A chave AES trancada
-        aes_iv: ivBase64, // O IV necessário para abrir o arquivo
-        fee: 1.5,
-        timestamp: Date.now()
-      };
-
-      console.log('6. Disparando para o Gateway (Kafka)!', transaction);
-      
-      // Fazendo o POST para a rota que sugerimos criar no seu Python FastAPI
-      const httpEndpoint = this.endpoint.replace('ws://', 'http://').replace('/ws/chain', '/transactions');
-      await this.http.post(httpEndpoint, transaction).toPromise();
-      
-      alert('Transação enviada e arquivo seguro na rede!');
-
-    } catch (error) {
-      console.error('Falha no processo:', error);
-      alert('Erro ao enviar o arquivo. Verifique se a chave pública está no formato correto.');
+      const { publicKey, privateKey } = await this.cryptoService.generateRsaKeyPair();
+      this.minhaChavePublica = publicKey;
+      this.minhaChavePrivada = privateKey;
+    } catch (err) {
+      console.error('Erro ao gerar chaves:', err);
     }
   }
-  // ==========================================
-  
-  // O destinatário cola sua chave privada aqui (em um cenário real, isso viria de uma carteira local segura, nunca exposta no HTML diretamente)
-  minhaChavePrivada: string = '';
-  transacaoJsonPasted: string = '';
 
-  /**
-   * Simula o clique em um botão "Baixar e Descriptografar Arquivo"
-   * @param transacaoRecebida O objeto JSON que chegou do Gateway Kafka
-   */
-  async baixarEDescriptografarArquivo(transacaoRecebida: any) {
-    if (!this.minhaChavePrivada) {
-      alert('Sua chave privada é necessária para abrir este arquivo.');
+  async enviarTransacao() {
+    if (!this.selectedFile || !this.chavePublicaDestinatario) {
+      alert('Selecione um arquivo e informe a chave pública do destinatário!');
       return;
     }
 
     try {
-      console.log('1. Importando sua Chave Privada RSA...');
-      const rsaPrivateKey = await this.cryptoService.importPrivateKey(this.minhaChavePrivada);
+      console.log('1. Gerando chave simétrica aleatória e criptografando o arquivo...');
+      // Generate a random symmetric block (e.g. 32 random bytes as hex)
+      const symmetricKeyBuffer = window.crypto.getRandomValues(new Uint8Array(32));
+      const symmetricKeyStr = Array.from(symmetricKeyBuffer).map(b => b.toString(16).padStart(2, '0')).join('');
 
-      console.log('2. Recuperando a Chave AES descartável da transação...');
-      // encrypted_key é a chave AES trancada que veio na transação
-      const aesKey = await this.cryptoService.decryptAESKeyWithRSA(
-        transacaoRecebida.encrypted_key, 
-        rsaPrivateKey
-      );
+      // Encrypt file with the symmetric key
+      const finalEncryptedBlob = await this.cryptoService.encryptFile(this.selectedFile, symmetricKeyStr);
+      const encryptedFile = new File([finalEncryptedBlob], `${this.selectedFile.name}.enc`);
 
-      console.log('3. Baixando o arquivo criptografado do IPFS...');
-      // Aqui você faz a requisição GET para o gateway do IPFS usando a URI salva
-      // Dependendo de como seu IpfsService está configurado, você retorna um Blob
-      const cid = transacaoRecebida.file_uri.replace('ipfs://', '');
+      console.log('2. Subindo arquivo protegido para o IPFS...');
+      const fileUri = await this.ipfsService.uploadFile(encryptedFile, encryptedFile.name);
+
+      console.log('3. Criptografando a chave simétrica com a Chave Pública do Destinatário...');
+      const encryptedSymmetricKey = await this.cryptoService.encryptWithPublicKey(symmetricKeyStr, this.chavePublicaDestinatario);
+
+      console.log('4. Montando a Transação...');
+      const transaction = {
+        sender: this.minhaChavePublica || 'Alice', 
+        receiver: this.chavePublicaDestinatario,
+        file_uri: fileUri,
+        encrypted_key: encryptedSymmetricKey,
+        fee: this.taxaTransacao,
+        timestamp: Date.now()
+      };
+
+      console.log('5. Disparando para o Gateway!');
+      const httpEndpoint = 'http://localhost:8000/transactions'; 
+      await this.http.post(httpEndpoint, transaction).toPromise();
       
-      // 2. Usa o gateway da Cloudflare (ou ipfs.io) que tem políticas de CORS mais flexíveis para frontends
+      alert('Arquivo e chave simétrica seguros na rede!');
+    } catch (error) {
+      console.error(error);
+      alert('Falha ao enviar transação!');
+    }
+  }
+
+  async resgatarArquivo() {
+    if (!this.uriResgate || !this.minhaChavePrivada || !this.chaveSimetricaCriptografada) {
+      alert('Por favor, informe a URI, sua Chave Privada e a Chave Simétrica Criptografada.');
+      return;
+    }
+
+    try {
+      console.log('1. Descriptografando a chave simétrica com a sua Chave Privada...');
+      const symmetricKey = await this.cryptoService.decryptWithPrivateKey(this.chaveSimetricaCriptografada, this.minhaChavePrivada);
+
+      console.log('2. Baixando o arquivo criptografado do IPFS...');
+      const cid = this.uriResgate.replace('ipfs://', '').trim();
       const ipfsGatewayUrl = `https://cloudflare-ipfs.com/ipfs/${cid}`; 
-      
       const encryptedBlob = await this.http.get(ipfsGatewayUrl, { responseType: 'blob' }).toPromise();
-
       if (!encryptedBlob) throw new Error('Falha ao baixar arquivo do IPFS');
 
-      console.log('4. Descriptografando o arquivo (AES)...');
-      // aes_iv é o Vetor de Inicialização público que viajou na transação
-      const decryptedBlob = await this.cryptoService.decryptFile(
-        encryptedBlob, 
-        aesKey, 
-        transacaoRecebida.aes_iv
-      );
-
-      console.log('5. Sucesso! Preparando o download no navegador...');
-      this.dispararDownloadNoNavegador(decryptedBlob, 'arquivo_descriptografado'); // Idealmente, você salva o nome original nos metadados ou no BD
-
-    } catch (error) {
-      console.error('Falha na descriptografia:', error);
-      alert('Acesso negado ou arquivo corrompido. Você é realmente o destinatário desta transação?');
+      console.log('3. Descriptografando o arquivo...');
+      const decryptedBlob = await this.cryptoService.decryptFile(encryptedBlob, symmetricKey);
+       
+      console.log('4. Sucesso! Iniciando download...');
+      this.dispararDownloadNoNavegador(decryptedBlob, 'arquivo_descriptografado'); 
+      
+    } catch(err) {
+      console.error('Falha no resgate:', err);
+      alert('Chave privada incorreta, URI inválida ou arquivo corrompido!');
     }
   }
 
@@ -431,11 +415,12 @@ export class AppComponent implements AfterViewInit, OnDestroy {
     document.body.removeChild(a);
   }
 
-
   dispararTesteDescriptografia() {
     try {
-      const transacaoObjeto = JSON.parse(this.transacaoJsonPasted);
-      this.baixarEDescriptografarArquivo(transacaoObjeto);
+      const transacaoObjeto = JSON.parse(this.uriResgate);
+      this.uriResgate = transacaoObjeto.file_uri;
+      this.chaveSimetricaCriptografada = transacaoObjeto.encrypted_key;
+      this.resgatarArquivo();
     } catch (e) {
       alert('O formato da transação colada não é um JSON válido.');
       console.error('Erro de parse:', e);

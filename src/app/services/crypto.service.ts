@@ -4,158 +4,139 @@ import { Injectable } from '@angular/core';
   providedIn: 'root'
 })
 export class CryptoService {
+
+  // ==========================================
+  // 1. DERIVAÇÃO DE CHAVE (PBKDF2)
+  // ==========================================
   
-  // 1. Gera uma chave AES-GCM de 256 bits aleatória
-  async generateAESKey(): Promise<CryptoKey> {
-    return await window.crypto.subtle.generateKey(
-      {
-        name: 'AES-GCM',
-        length: 256
-      },
-      true, // Permite exportar a chave depois
+  private async deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<CryptoKey> {
+    const encoder = new TextEncoder();
+    const passwordBuffer = encoder.encode(password);
+    const baseKey = await window.crypto.subtle.importKey('raw', passwordBuffer, 'PBKDF2', false, ['deriveKey']);
+    return await window.crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' },
+      baseKey,
+      { name: 'AES-GCM', length: 256 },
+      false,
       ['encrypt', 'decrypt']
     );
   }
 
-  // 2. Criptografa o arquivo usando a chave AES
-  async encryptFile(file: File, aesKey: CryptoKey): Promise<{ encryptedBlob: Blob, iv: Uint8Array }> {
-    // O IV (Vetor de Inicialização) adiciona aleatoriedade. Deve ter 12 bytes para GCM.
+  // ==========================================
+  // 2. CRIPTOGRAFIA DE ARQUIVO (SIMÉTRICA)
+  // ==========================================
+
+  async encryptFile(file: File, password: string): Promise<Blob> {
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const aesKey = await this.deriveKeyFromPassword(password, salt);
     const fileBuffer = await file.arrayBuffer();
-
     const encryptedContent = await window.crypto.subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv
-      },
-      aesKey,
-      fileBuffer
+      { name: 'AES-GCM', iv: iv }, aesKey, fileBuffer
     );
-
-    // Retornamos o conteúdo criptografado e o IV (o destinatário precisará do IV para descriptografar)
-    const encryptedBlob = new Blob([encryptedContent]);
-    return { encryptedBlob, iv };
+    return new Blob([salt, iv, encryptedContent]);
   }
 
-  // 3. Importa a chave pública RSA do destinatário (Assumindo formato SPKI em Base64)
-  async importPublicKey(base64PublicKey: string): Promise<CryptoKey> {
-    // Remove cabeçalhos PEM se existirem (ex: -----BEGIN PUBLIC KEY-----)
-    const cleanKey = base64PublicKey.replace(/(-----(BEGIN|END) PUBLIC KEY-----|\n|\r)/g, '');
-    const binaryDer = this.base64ToArrayBuffer(cleanKey);
-
-    return await window.crypto.subtle.importKey(
-      'spki',
-      binaryDer,
-      {
-        name: 'RSA-OAEP',
-        hash: 'SHA-256'
-      },
-      false,
-      ['encrypt']
+  async decryptFile(encryptedBlob: Blob, password: string): Promise<Blob> {
+    const buffer = await encryptedBlob.arrayBuffer();
+    const salt = new Uint8Array(buffer.slice(0, 16));
+    const iv = new Uint8Array(buffer.slice(16, 28));
+    const encryptedContent = buffer.slice(28);
+    const aesKey = await this.deriveKeyFromPassword(password, salt);
+    const decryptedContent = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv }, aesKey, encryptedContent
     );
-  }
-
-  // 4. Criptografa a chave AES usando a chave Pública RSA
-  async encryptAESKeyWithRSA(aesKey: CryptoKey, rsaPublicKey: CryptoKey): Promise<string> {
-    // Primeiro, exporta a chave AES para formato "raw" (bytes crus)
-    const rawAesKey = await window.crypto.subtle.exportKey('raw', aesKey);
-
-    // Criptografa os bytes crus com o RSA do destinatário
-    const encryptedAesKeyBuffer = await window.crypto.subtle.encrypt(
-      {
-        name: 'RSA-OAEP'
-      },
-      rsaPublicKey,
-      rawAesKey
-    );
-
-    // Retorna como Base64 para facilitar o tráfego no JSON (Kafka)
-    return this.arrayBufferToBase64(encryptedAesKeyBuffer);
+    return new Blob([decryptedContent]);
   }
 
   // ==========================================
-  // Utilitários de Conversão (Base64 <-> Buffer)
+  // 3. UTILITÁRIOS PARA RSA E PEM
   // ==========================================
   
-  base64ToArrayBuffer(base64: string): ArrayBuffer {
-    const binaryString = window.atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+  private pemToArrayBuffer(pem: string): ArrayBuffer {
+    const b64Lines = pem.replace(/-----BEGIN[^-]+-----|-----END[^-]+-----/g, '');
+    const b64Str = b64Lines.replace(/\s+/g, '');
+    const byteStr = window.atob(b64Str);
+    const bytes = new Uint8Array(byteStr.length);
+    for (let i = 0; i < byteStr.length; i++) {
+       bytes[i] = byteStr.charCodeAt(i);
     }
     return bytes.buffer;
   }
 
-  arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
     let binary = '';
+    const bytes = new Uint8Array(buffer);
     for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+        binary += String.fromCharCode(bytes[i]);
     }
     return window.btoa(binary);
   }
 
-
-  // ==========================================
-  // MÉTODOS DE DESCRIPTOGRAFIA (CAMINHO INVERSO)
-  // ==========================================
-
-  // 5. Importa a chave privada RSA do destinatário (Formato PKCS#8 em Base64)
-  async importPrivateKey(base64PrivateKey: string): Promise<CryptoKey> {
-    // Remove cabeçalhos PEM se existirem
-    const cleanKey = base64PrivateKey.replace(/(-----(BEGIN|END) PRIVATE KEY-----|\n|\r)/g, '');
-    const binaryDer = this.base64ToArrayBuffer(cleanKey);
-
-    return await window.crypto.subtle.importKey(
-      'pkcs8', // Chaves privadas usam pkcs8, públicas usam spki
-      binaryDer,
-      {
-        name: 'RSA-OAEP',
-        hash: 'SHA-256'
-      },
-      false,
-      ['decrypt']
-    );
+  public arrayBufferToPem(buffer: ArrayBuffer, label: string): string {
+    const base64 = this.arrayBufferToBase64(buffer);
+    const matched = base64.match(/.{1,64}/g);
+    const p = matched ? matched.join('\n') : '';
+    return `-----BEGIN ${label}-----\n${p}\n-----END ${label}-----`;
   }
 
-  // 6. Descriptografa a chave AES usando a chave Privada RSA do destinatário
-  async decryptAESKeyWithRSA(encryptedAesKeyBase64: string, rsaPrivateKey: CryptoKey): Promise<CryptoKey> {
-    const encryptedBytes = this.base64ToArrayBuffer(encryptedAesKeyBase64);
-
-    // Isso devolve os bytes crus (raw buffer) da chave AES original
-    const rawAesKeyBuffer = await window.crypto.subtle.decrypt(
+  async generateRsaKeyPair(): Promise<{ publicKey: string, privateKey: string }> {
+    const keyPair = await window.crypto.subtle.generateKey(
       {
-        name: 'RSA-OAEP'
+        name: "RSA-OAEP",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
       },
-      rsaPrivateKey,
-      encryptedBytes
+      true,
+      ["encrypt", "decrypt"]
     );
 
-    // Importa os bytes crus de volta para um objeto CryptoKey do tipo AES-GCM
-    return await window.crypto.subtle.importKey(
-      'raw',
-      rawAesKeyBuffer,
-      { name: 'AES-GCM' },
-      false,
-      ['decrypt'] // Permissão apenas para descriptografar
-    );
+    const exportedPublicKey = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+    const exportedPrivateKey = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+
+    return {
+      publicKey: this.arrayBufferToPem(exportedPublicKey, "PUBLIC KEY"),
+      privateKey: this.arrayBufferToPem(exportedPrivateKey, "PRIVATE KEY")
+    };
   }
 
-  // 7. Descriptografa o arquivo usando a chave AES recuperada e o IV original
-  async decryptFile(encryptedBlob: Blob, aesKey: CryptoKey, ivBase64: string): Promise<Blob> {
-    const ivBuffer = this.base64ToArrayBuffer(ivBase64);
-    const iv = new Uint8Array(ivBuffer);
-    const encryptedBuffer = await encryptedBlob.arrayBuffer();
-
-    const decryptedContent = await window.crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv
-      },
-      aesKey,
-      encryptedBuffer
+  async encryptWithPublicKey(data: string, pemPublicKey: string): Promise<string> {
+    const pubKeyBuffer = this.pemToArrayBuffer(pemPublicKey);
+    const cryptoKey = await window.crypto.subtle.importKey(
+      "spki", pubKeyBuffer,
+      { name: "RSA-OAEP", hash: "SHA-256" },
+      false, ["encrypt"]
     );
+    const encoder = new TextEncoder();
+    const encodedData = encoder.encode(data);
+    const encryptedData = await window.crypto.subtle.encrypt(
+      { name: "RSA-OAEP" }, cryptoKey, encodedData
+    );
+    return this.arrayBufferToBase64(encryptedData);
+  }
 
-    return new Blob([decryptedContent]);
+  async decryptWithPrivateKey(encryptedBase64: string, pemPrivateKey: string): Promise<string> {
+    const privKeyBuffer = this.pemToArrayBuffer(pemPrivateKey);
+    const cryptoKey = await window.crypto.subtle.importKey(
+      "pkcs8", privKeyBuffer,
+      { name: "RSA-OAEP", hash: "SHA-256" },
+      false, ["decrypt"]
+    );
+    const encryptedDataBuffer = this.pemToArrayBuffer(`-----BEGIN DATA-----\n${encryptedBase64}\n-----END DATA-----`); // reuse function to parse base64 purely
+    
+    // direct from base64
+    const b64Str = encryptedBase64.replace(/\s+/g, '');
+    const byteStr = window.atob(b64Str);
+    const bytes = new Uint8Array(byteStr.length);
+    for (let i = 0; i < byteStr.length; i++) {
+       bytes[i] = byteStr.charCodeAt(i);
+    }
+
+    const decryptedData = await window.crypto.subtle.decrypt(
+      { name: "RSA-OAEP" }, cryptoKey, bytes.buffer
+    );
+    const decoder = new TextDecoder();
+    return decoder.decode(decryptedData);
   }
 }

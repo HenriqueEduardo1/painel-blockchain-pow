@@ -31,6 +31,7 @@ export function parsearPayloadEvento(raw: unknown): ChainEventPayload | null {
     size: asRecord['size'],
     main_chain_hashes: asRecord['main_chain_hashes'],
     new_tip: asRecord['new_tip'],
+    message: asRecord['message'],
   };
 }
 

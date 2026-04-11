@@ -10,6 +10,7 @@ export class SseSource implements SourceAdapter {
     'mempool_update',
     'mempool_delta',
     'chain_reorg',
+    'network_message',
   ];
 
   constructor(private readonly url: string) {}

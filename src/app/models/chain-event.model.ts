@@ -6,4 +6,5 @@ export interface ChainEventPayload {
   size?: unknown;
   main_chain_hashes?: unknown;
   new_tip?: unknown;
+  message?: unknown;
 }

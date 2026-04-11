@@ -198,6 +198,12 @@ export class AppComponent implements AfterViewInit, OnDestroy {
         break;
       }
 
+      case 'network_message': {
+        const msg = typeof event.message === 'string' ? event.message : 'Mensagem desconhecida';
+        this.registrarEvento(`[rede] ${msg}`);
+        break;
+      }
+
       default:
         this.registrarEvento(`[ignorado] tipo de evento desconhecido ${event.type}`);
     }
